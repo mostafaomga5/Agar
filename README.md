@@ -1,14 +1,55 @@
 # أجاري — منصة الاستئجار
 
-React / Express / tRPC / Drizzle starter, adapted from the Sandbox web-db-user template.
+**كل ما تحتاجه، تقدر تستأجره.** واجهة سوق عربية متجاوبة لاكتشاف الإعلانات القريبة وإدارة طلبات التأجير والتواصل بين المالك والمستأجر.
 
-- `pnpm dev`: development server; honors `PORT` (default 3000).
-- `pnpm build` / `pnpm start`: build and serve `dist/index.js` and `dist/public/`.
-- `pnpm db:migrate`: apply checked-in migrations. `pnpm db:push`: generate and apply new schema changes.
-- `pnpm check` / `pnpm test`: types and application tests.
+## ما الذي يتضمنه المشروع؟
 
-Start with the Webdev skill's default-template guide. Platform login, storage, payments and service contracts live in its shared references; read the relevant capability before extending its helper.
+- واجهة عربية كاملة باتجاه RTL متوافقة مع الويب والجوال، متسقة مع الهوية البصرية الموجودة في `plan.md`.
+- صفحات رئيسية وتصفح للفئات وتفاصيل الإعلان، مع بحث بالموقع، وفرز سعري، وتصفية حسب ميزانية الفترة وتوفرها.
+- بيانات أمثلة ثابتة وموسومة بوضوح كي لا تظهر كإعلانات أو تقييمات حقيقية.
+- إضافة الإعلانات وتعديلها وإظهارها/إخفاؤها من لوحة المستخدم.
+- طلبات حجز مع تقدير التكلفة ورسوم الخدمة بنسبة 5%، وفحص تعارض التواريخ، ومراحل موافقة وتسليم وإرجاع وإكمال.
+- رسائل بين طرفي الحجز، وتقييم متبادل بعد إكمال الطلب، ومتوسط تقييم ومراجعات ظاهرة على صفحة العضو.
+- تسجيل الدخول بواسطة Manus OAuth الموجود بالقالب. تتطلب عمليات الإنشاء والحجز والمراسلة والتقييم حسابًا موثقًا.
 
-`server/_core/publicConfig.ts` exposes only named public runtime values. Private keys stay server-side. The platform serves managed `/manus-storage/` assets; the application does not register a second proxy.
+## التقنية
 
-Platform configuration is readable and editable through `webdev.config`. Default settings are initial values, not enforced constraints. The agent may modify the files, commands and configuration or follow the flexible guide for another stack.
+- React وTypeScript وVite وTailwind CSS للواجهة.
+- Express وtRPC للخدمات، وDrizzle ORM على قاعدة MySQL المدارة.
+- Manus OAuth للجلسات؛ صور الإعلانات تقبل روابط HTTPS أو مسارات `/manus-storage/`.
+
+## تشغيل المشروع
+
+يتطلب Node.js مع pnpm واتصالًا بقاعدة MySQL عند استخدام عمليات السوق الحقيقية.
+
+```bash
+pnpm install
+pnpm dev
+```
+
+تشغيل الفحوص والبناء:
+
+```bash
+pnpm check
+pnpm test
+pnpm build
+```
+
+يوفر `pnpm dev` خادم التطوير، ويأخذ المنفذ من `PORT` (والافتراضي 3000). يوفر بيئة Manus قيم المنصة وقاعدة البيانات عند تشغيل المشروع داخلها؛ لا تحفظ مفاتيح أو بيانات اعتماد في ملفات الواجهة أو المستودع.
+
+## قاعدة البيانات
+
+مخطط البيانات في `drizzle/schema.ts`، والترحيل الجديد في `drizzle/0001_loving_young_avengers.sql`. أُضيفت جداول الإعلانات وطلبات الاستئجار والرسائل والمراجعات بالإضافة إلى جدول مستخدمي القالب. قاعدة التطوير المدارة مشتركة مع البيئة المنشورة؛ لا تستخدم `pnpm db:push` خارج تغيير مقصود للمخطط.
+
+## تنظيم الكود
+
+- `client/src/pages/`: الصفحة الرئيسية، التصفح، تفاصيل الإعلان، لوحة المستخدم، الإعلانات والرسائل.
+- `client/src/components/`: هوية العلامة، الرأس والبطاقات المشتركة.
+- `client/public/manus-routes.json`: قائمة مسارات صفحات الموقع.
+- `server/routers.ts` و`server/marketplace.ts`: واجهات tRPC واستعلامات السوق وقواعد الأدوار والحالات.
+- `drizzle/schema.ts` و`drizzle/`: تعريف الجداول وترحيلاتها.
+- `plan.md` و`TODO.md`: التصميم، بنية العمل، وما أُنجز وما بقي.
+
+## حدود النسخة الحالية
+
+هذه نقطة انطلاق عملية للمنصة وليست إطلاقًا تجاريًا كاملًا. أمثلة البطاقات للعرض فقط. لا تتضمن النسخة تحصيلًا إلكترونيًا أو التحقق من الهوية أو إشعارات جوال، ولا تقدم هذه الخدمات على أنها مفعلة.

@@ -1,0 +1,1 @@
+{"routes":[{"path":"/","title":"الرئيسية — أجاري"},{"path":"/explore","title":"اكتشف — أجاري"},{"path":"/listing/:id","title":"تفاصيل الإعلان — أجاري"},{"path":"/dashboard","title":"حسابي — أجاري"},{"path":"/list-item","title":"الإعلانات — أجاري"},{"path":"/messages","title":"الرسائل — أجاري"}]}
