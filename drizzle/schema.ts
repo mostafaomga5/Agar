@@ -6,6 +6,7 @@ import {
   mysqlTable,
   text,
   timestamp,
+  time,
   varchar,
 } from "drizzle-orm/mysql-core";
 
@@ -58,6 +59,10 @@ export const rentalRequests = mysqlTable(
     startDate: date("startDate", { mode: "string" }).notNull(),
     endDate: date("endDate", { mode: "string" }).notNull(),
     totalDays: int("totalDays").notNull(),
+    startTime: time("startTime"),
+    endTime: time("endTime"),
+    totalUnits: int("totalUnits"),
+    rentalUnit: varchar("rentalUnit", { length: 32 }),
     unitPrice: int("unitPrice").notNull(),
     serviceFee: int("serviceFee").notNull(),
     totalPrice: int("totalPrice").notNull(),

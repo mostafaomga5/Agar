@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
@@ -7,6 +8,7 @@ import {
   createReview,
   getDashboard,
   getListing,
+  getOwnedListing,
   listListings,
   listMessages,
   sendMessage,
@@ -15,7 +17,9 @@ import {
   updateListing,
 } from "./marketplace";
 import { COOKIE_NAME } from "@shared/const";
+import { rentalUnitsForCategory } from "@shared/rental";
 import { getSessionCookieOptions } from "./_core/cookies";
+import { storagePut } from "./storage";
 
 const imageReference = z.string().trim().min(1).max(2048).refine(
   value => /^https:\/\//i.test(value) || /^\/manus-storage\/[A-Za-z0-9/_\-.]+$/.test(value),
@@ -30,6 +34,10 @@ const listingInput = z.object({
   unit: z.string().trim().min(2).max(32),
   description: z.string().trim().min(20).max(8000),
   imageUrls: z.array(imageReference).min(1).max(8),
+}).superRefine((value, context) => {
+  if (!rentalUnitsForCategory(value.category).includes(value.unit)) {
+    context.addIssue({ code: "custom", path: ["unit"], message: "اختر وحدة تسعير مناسبة للقسم المحدد" });
+  }
 });
 const listingFilters = z.object({
   category: z.string().trim().min(1).max(64).optional(),
@@ -37,9 +45,37 @@ const listingFilters = z.object({
   query: z.string().trim().min(1).max(160).optional(),
   minPrice: z.number().int().min(1).max(1_000_000).optional(),
   maxPrice: z.number().int().min(1).max(1_000_000).optional(),
+  unit: z.string().trim().min(1).max(32).optional(),
   dateFrom: z.string().date().optional(),
   dateTo: z.string().date().optional(),
 });
+const clockTime = z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/);
+const imageUploadInput = z.object({
+  contentType: z.enum(["image/jpeg", "image/png", "image/webp"]),
+  base64: z.string().min(16).max(8_388_608).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+});
+
+async function persistListingImage(ownerId: number, input: z.infer<typeof imageUploadInput>) {
+  const bytes = Buffer.from(input.base64, "base64");
+  if (!bytes.length || bytes.length > 6 * 1024 * 1024) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "حجم الصورة يجب أن يكون 6 ميغابايت أو أقل" });
+  }
+  const validSignature =
+    (input.contentType === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) ||
+    (input.contentType === "image/png" && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) ||
+    (input.contentType === "image/webp" && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP");
+  if (!validSignature) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الملف ليس صورة JPEG أو PNG أو WebP صالحة" });
+  }
+  const extension = input.contentType === "image/jpeg" ? "jpg" : input.contentType === "image/png" ? "png" : "webp";
+  const key = `listing-images/${ownerId}/${crypto.randomUUID()}.${extension}`;
+  try {
+    const stored = await storagePut(key, bytes, input.contentType);
+    return { url: stored.url };
+  } catch {
+    throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "تعذر رفع الصورة الآن. حاول مرة أخرى بعد قليل." });
+  }
+}
 
 export const appRouter = router({
   system: systemRouter,
@@ -54,17 +90,23 @@ export const appRouter = router({
   marketplace: router({
     listings: publicProcedure.input(listingFilters.optional()).query(({ input }) => listListings(input ?? {})),
     listing: publicProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getListing(input.id)),
+    ownedListing: protectedProcedure.input(z.object({ id: z.number().int().positive() }))
+      .query(({ ctx, input }) => getOwnedListing(ctx.user.id, input.id)),
     createListing: protectedProcedure.input(listingInput).mutation(({ ctx, input }) => createListing(ctx.user.id, input)),
-    updateListing: protectedProcedure.input(listingInput.extend({ id: z.number().int().positive() }))
+    updateListing: protectedProcedure.input(listingInput.safeExtend({ id: z.number().int().positive() }))
       .mutation(({ ctx, input }) => updateListing(ctx.user.id, input)),
+    uploadListingImage: protectedProcedure.input(imageUploadInput).mutation(({ ctx, input }) => persistListingImage(ctx.user.id, input)),
     setListingVisibility: protectedProcedure.input(z.object({ id: z.number().int().positive(), visible: z.boolean() }))
       .mutation(({ ctx, input }) => setListingVisibility(ctx.user.id, input.id, input.visible)),
     createBooking: protectedProcedure.input(z.object({
       listingId: z.number().int().positive(),
       startDate: z.string().date(),
       endDate: z.string().date(),
+      startTime: clockTime.optional(),
+      endTime: clockTime.optional(),
       note: z.string().max(2000).optional(),
-    })).mutation(({ ctx, input }) => createBooking(ctx.user.id, input)),
+    }).refine(input => Boolean(input.startTime) === Boolean(input.endTime), { path: ["endTime"], message: "أدخل وقت البداية والنهاية معًا" }))
+      .mutation(({ ctx, input }) => createBooking(ctx.user.id, input)),
     dashboard: protectedProcedure.query(({ ctx }) => getDashboard(ctx.user.id)),
     changeBookingStatus: protectedProcedure.input(z.object({
       id: z.number().int().positive(),

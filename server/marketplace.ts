@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
-import { and, avg, count, desc, eq, gt, gte, inArray, like, lt, lte, notInArray, or } from "drizzle-orm";
+import { and, avg, count, desc, eq, gt, gte, inArray, like, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { calculateRentalUnits } from "@shared/rental";
 import { getDb } from "./db";
 import { listings, messages, rentalRequests, reviews, users } from "../drizzle/schema";
 
@@ -18,7 +19,7 @@ function databaseUnavailable(): never {
   throw new TRPCError({ code: "SERVICE_UNAVAILABLE", message: "الخدمة غير متاحة مؤقتًا. حاول مرة أخرى لاحقًا." });
 }
 
-export async function listListings(filters: { category?: string; city?: string; query?: string; minPrice?: number; maxPrice?: number; dateFrom?: string; dateTo?: string }) {
+export async function listListings(filters: { category?: string; city?: string; query?: string; minPrice?: number; maxPrice?: number; unit?: string; dateFrom?: string; dateTo?: string }) {
   const db = await getDb();
   if (!db) return [];
   if (filters.minPrice !== undefined && filters.maxPrice !== undefined && filters.minPrice > filters.maxPrice) {
@@ -32,6 +33,7 @@ export async function listListings(filters: { category?: string; city?: string; 
   if (filters.city) clauses.push(like(listings.city, `%${filters.city}%`));
   if (filters.minPrice !== undefined) clauses.push(gte(listings.pricePerUnit, filters.minPrice));
   if (filters.maxPrice !== undefined) clauses.push(lte(listings.pricePerUnit, filters.maxPrice));
+  if (filters.unit) clauses.push(eq(listings.unit, filters.unit));
   if (filters.query) {
     const term = `%${filters.query}%`;
     clauses.push(or(like(listings.title, term), like(listings.description, term), like(listings.category, term))!);
@@ -86,6 +88,15 @@ export async function getListing(id: number) {
   return { ...rows[0], rating: Number(summary?.rating ?? 0), reviewCount: Number(summary?.reviewCount ?? 0), publicReviews };
 }
 
+export async function getOwnedListing(ownerId: number, id: number) {
+  const db = await getDb();
+  if (!db) databaseUnavailable();
+  const [row] = await db.select().from(listings)
+    .where(and(eq(listings.id, id), eq(listings.ownerId, ownerId))).limit(1);
+  if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "الإعلان غير موجود أو لا تملك صلاحية تعديله" });
+  return row;
+}
+
 export async function createListing(ownerId: number, input: ListingInput) {
   const db = await getDb();
   if (!db) databaseUnavailable();
@@ -111,27 +122,35 @@ export async function setListingVisibility(ownerId: number, id: number, visible:
   return { success: true };
 }
 
-export async function createBooking(renterId: number, input: { listingId: number; startDate: string; endDate: string; note?: string }) {
+export async function createBooking(renterId: number, input: { listingId: number; startDate: string; endDate: string; startTime?: string; endTime?: string; note?: string }) {
   const db = await getDb();
   if (!db) databaseUnavailable();
   const [listing] = await db.select().from(listings).where(and(eq(listings.id, input.listingId), eq(listings.status, "published"))).limit(1);
   if (!listing) throw new TRPCError({ code: "NOT_FOUND", message: "الإعلان غير موجود أو لم يعد متاحًا" });
   if (listing.ownerId === renterId) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك طلب استئجار إعلانك الخاص" });
-  const start = new Date(`${input.startDate}T00:00:00Z`).getTime();
-  const end = new Date(`${input.endDate}T00:00:00Z`).getTime();
-  const totalDays = Math.ceil((end - start) / 86_400_000);
-  if (!Number.isFinite(start) || !Number.isFinite(end) || totalDays < 1 || totalDays > 90) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر فترة صحيحة من يوم إلى 90 يومًا" });
+  if (listing.unit === "ساعة" && (!input.startTime || !input.endTime)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "اختر وقت البداية والنهاية للإيجار بالساعة" });
+  }
+  if (listing.unit !== "ساعة" && (input.startTime || input.endTime)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الأوقات التفصيلية متاحة للإعلانات المسعرة بالساعة فقط" });
+  }
+  const start = Date.parse(`${input.startDate}T${input.startTime ?? "00:00"}:00Z`);
+  const end = Date.parse(`${input.endDate}T${input.endTime ?? "00:00"}:00Z`);
+  const units = calculateRentalUnits(listing.unit, input.startDate, input.endDate, input.startTime, input.endTime);
+  const totalDays = Math.max(1, Math.ceil((Date.parse(`${input.endDate}T00:00:00Z`) - Date.parse(`${input.startDate}T00:00:00Z`)) / 86_400_000));
+  const maxUnits = listing.unit === "ساعة" ? 720 : listing.unit === "سنة" ? 5 : listing.unit === "شهر" ? 60 : listing.unit === "أسبوع" ? 260 : listing.unit === "مناسبة" ? 30 : 1825;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || units === null || units < 1 || units > maxUnits) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `اختر مدة صحيحة لهذا الإعلان؛ الحد الأقصى ${maxUnits} ${listing.unit}` });
   }
   const overlaps = await db.select({ id: rentalRequests.id }).from(rentalRequests)
     .where(and(
       eq(rentalRequests.listingId, input.listingId),
       inArray(rentalRequests.status, ["pending", "approved", "handed_over"]),
-      lt(rentalRequests.startDate, input.endDate),
-      gt(rentalRequests.endDate, input.startDate),
+      sql`TIMESTAMP(${rentalRequests.startDate}, COALESCE(${rentalRequests.startTime}, '00:00:00')) < TIMESTAMP(${input.endDate}, ${input.endTime ? `${input.endTime}:00` : "00:00:00"})`,
+      sql`TIMESTAMP(${rentalRequests.endDate}, COALESCE(${rentalRequests.endTime}, '00:00:00')) > TIMESTAMP(${input.startDate}, ${input.startTime ? `${input.startTime}:00` : "00:00:00"})`,
     )).limit(1);
   if (overlaps[0]) throw new TRPCError({ code: "CONFLICT", message: "الفترة المختارة تتعارض مع طلب آخر. جرّب تواريخ مختلفة." });
-  const subtotal = listing.pricePerUnit * totalDays;
+  const subtotal = listing.pricePerUnit * units;
   const serviceFee = Math.round(subtotal * 0.05);
   const totalPrice = subtotal + serviceFee;
   const result = await db.insert(rentalRequests).values({
@@ -140,13 +159,17 @@ export async function createBooking(renterId: number, input: { listingId: number
     startDate: input.startDate,
     endDate: input.endDate,
     totalDays,
+    startTime: input.startTime ? `${input.startTime}:00` : null,
+    endTime: input.endTime ? `${input.endTime}:00` : null,
+    totalUnits: units,
+    rentalUnit: listing.unit,
     unitPrice: listing.pricePerUnit,
     serviceFee,
     totalPrice,
     note: input.note?.trim() || null,
     status: "pending",
   });
-  return { id: Number(result[0].insertId), totalDays, subtotal, serviceFee, totalPrice, status: "pending" as const };
+  return { id: Number(result[0].insertId), totalDays, totalUnits: units, rentalUnit: listing.unit, subtotal, serviceFee, totalPrice, status: "pending" as const };
 }
 
 export async function getDashboard(userId: number) {
@@ -160,7 +183,11 @@ export async function getDashboard(userId: number) {
       renterId: rentalRequests.renterId,
       startDate: rentalRequests.startDate,
       endDate: rentalRequests.endDate,
+      startTime: rentalRequests.startTime,
+      endTime: rentalRequests.endTime,
       totalDays: rentalRequests.totalDays,
+      totalUnits: rentalRequests.totalUnits,
+      rentalUnit: rentalRequests.rentalUnit,
       totalPrice: rentalRequests.totalPrice,
       status: rentalRequests.status,
       createdAt: rentalRequests.createdAt,
