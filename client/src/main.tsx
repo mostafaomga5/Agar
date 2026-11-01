@@ -33,7 +33,16 @@ queryClient.getMutationCache().subscribe(event => {
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.mutation.state.error;
     redirectToLoginIfUnauthorized(error);
-    console.error("[API Mutation Error]", error);
+    const mutationKey = event.mutation.options.mutationKey;
+    const path = Array.isArray(mutationKey)
+      ? mutationKey.filter((part): part is string => typeof part === "string").join(".")
+      : undefined;
+    console.error("[API Mutation Error]", {
+      path,
+      code: error instanceof TRPCClientError ? error.data?.code : undefined,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
   }
 });
 
